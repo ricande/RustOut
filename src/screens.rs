@@ -3,10 +3,7 @@
 
 use macroquad::prelude::*;
 
-use crate::app::{
-    menu_buttons, select_buttons, video_dialog_buttons, video_field_rect, App, VideoField,
-    VIDEO_BUTTON, VIDEO_PANEL,
-};
+use crate::app::{menu_buttons, select_buttons, App};
 use crate::editor::{dialog_buttons, palette, toolbar, Brush, Editor, Modal, GRID_ROWS_Y, PANEL};
 use crate::game::{Brick, FIELD_H, FIELD_W, PADDLE_H, PADDLE_W, PADDLE_Y};
 use crate::levels::{self, Block, BUILD_AREA};
@@ -16,6 +13,7 @@ use crate::render::{
 };
 use crate::t;
 use crate::ui::{Button, ListState};
+use crate::video_dialog::{self, Field as VideoField, VIDEO_BUTTON};
 
 const ERROR: Color = Color::new(1.0, 0.4, 0.4, 1.0);
 const BUTTON: Color = Color::new(0.08, 0.10, 0.22, 1.0);
@@ -498,7 +496,7 @@ pub fn draw_video_ui(app: &App, view: View, fx: &Effects, pointer: Option<Vec2>,
     }
 
     if let Some(d) = &app.video_dialog {
-        let p = VIDEO_PANEL;
+        let p = video_dialog::PANEL;
         v.rect(0.0, 0.0, FIELD_W, FIELD_H, with_alpha(BLACK, 0.6));
         v.rect(p.x, p.y, p.w, p.h, PANEL_BG);
         v.rect_lines(p.x, p.y, p.w, p.h, 2.0, ACCENT);
@@ -515,7 +513,7 @@ pub fn draw_video_ui(app: &App, view: View, fx: &Effects, pointer: Option<Vec2>,
                 (VideoField::Name, t!("video.name_label"), &d.name.text),
                 (VideoField::Dir, t!("video.folder_label"), &d.dir.text),
             ] {
-                let r = video_field_rect(field);
+                let r = video_dialog::field_rect(field);
                 v.text(label, r.x, r.y - 10.0, 18.0, with_alpha(TEXT, 0.8));
                 let focused = d.focus == field;
                 let border = if focused {
@@ -532,7 +530,7 @@ pub fn draw_video_ui(app: &App, view: View, fx: &Effects, pointer: Option<Vec2>,
             }
         }
         let confirming = d.overwrite.is_some();
-        draw_buttons(v, &video_dialog_buttons(confirming), pointer);
+        draw_buttons(v, &video_dialog::buttons(confirming), pointer);
     } else if let Some((text, error)) = &app.video_message {
         let p = Rect::new(30.0, 380.0, 480.0, 220.0);
         v.rect(0.0, 0.0, FIELD_W, FIELD_H, with_alpha(BLACK, 0.5));

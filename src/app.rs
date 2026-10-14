@@ -1,7 +1,8 @@
 //! Screens and the transitions between them: main menu, custom level
-//! selection, the game, the editor and test play from the editor, plus the
-//! "save video" dialog. Like the game and the editor, this is driven by
-//! abstract `Input`; recording and saving videos is done by `main`.
+//! selection, the game, the editor and test play from the editor. It also
+//! opens the "save video" dialog (`video_dialog.rs`) and the language switch.
+//! Like the game and the editor, this is driven by abstract `Input`;
+//! recording and saving videos is done by `capture.rs`.
 
 use std::path::PathBuf;
 
@@ -13,8 +14,9 @@ use crate::levels::{self, Layout};
 use crate::store::{self, LevelStore};
 use crate::t;
 use crate::ui::{
-    button_row, clicked_button, Button, Input, Key, ListItem, ListResponse, ListState, TextField,
+    button_row, clicked_button, Button, Input, Key, ListItem, ListResponse, ListState,
 };
+use crate::video_dialog::{DialogResult, SaveDialog, VIDEO_BUTTON};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
@@ -74,75 +76,6 @@ pub fn select_buttons() -> Vec<Button<SelectButton>> {
         ],
     )
 }
-
-/// "Save video" on the game over and victory screens.
-pub const VIDEO_BUTTON: Rect = Rect {
-    x: 140.0,
-    y: 690.0,
-    w: 260.0,
-    h: 52.0,
-};
-
-pub const VIDEO_PANEL: Rect = Rect {
-    x: 30.0,
-    y: 280.0,
-    w: 480.0,
-    h: 430.0,
-};
-
-/// Text boxes of the save dialog: file name and folder.
-pub fn video_field_rect(field: VideoField) -> Rect {
-    let y = match field {
-        VideoField::Name => VIDEO_PANEL.y + 110.0,
-        VideoField::Dir => VIDEO_PANEL.y + 205.0,
-    };
-    Rect::new(VIDEO_PANEL.x + 20.0, y, VIDEO_PANEL.w - 40.0, 46.0)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VideoAction {
-    Save,
-    Cancel,
-}
-
-pub fn video_dialog_buttons(confirming: bool) -> Vec<Button<VideoAction>> {
-    let area = Rect::new(
-        VIDEO_PANEL.x + 20.0,
-        VIDEO_PANEL.bottom() - 70.0,
-        VIDEO_PANEL.w - 40.0,
-        50.0,
-    );
-    let items = if confirming {
-        [
-            (t!("video.overwrite_yes"), VideoAction::Save),
-            (t!("common.no"), VideoAction::Cancel),
-        ]
-    } else {
-        [
-            (t!("common.save"), VideoAction::Save),
-            (t!("common.cancel"), VideoAction::Cancel),
-        ]
-    };
-    button_row(area, &items)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum VideoField {
-    Name,
-    Dir,
-}
-
-/// Choosing a file name and folder for the last round's video.
-pub struct SaveDialog {
-    pub name: TextField,
-    pub dir: TextField,
-    pub focus: VideoField,
-    pub error: Option<String>,
-    /// The chosen file exists; waiting for "overwrite?" to be answered.
-    pub overwrite: Option<PathBuf>,
-}
-
-const MAX_DIR_LEN: usize = 300;
 
 pub fn select_area() -> Rect {
     Rect::new(40.0, 150.0, 460.0, 14.0 * crate::ui::LIST_ROW_H)
@@ -213,16 +146,7 @@ impl App {
     }
 
     pub fn open_video_dialog(&mut self) {
-        self.video_dialog = Some(SaveDialog {
-            name: TextField::new(
-                &crate::video::default_name(std::time::SystemTime::now()),
-                crate::video::MAX_NAME_LEN,
-            ),
-            dir: TextField::new(&self.video_dir, MAX_DIR_LEN),
-            focus: VideoField::Name,
-            error: None,
-            overwrite: None,
-        });
+        self.video_dialog = Some(SaveDialog::new(&self.video_dir));
     }
 
     /// Called by `main` when a save has finished.
@@ -239,57 +163,20 @@ impl App {
     }
 
     fn handle_video_dialog(&mut self, input: &Input) {
-        let Some(d) = &mut self.video_dialog else {
+        let Some(dialog) = &mut self.video_dialog else {
             return;
         };
-        let button = clicked_button(&video_dialog_buttons(d.overwrite.is_some()), input);
-        let ok = button == Some(VideoAction::Save) || input.key(Key::Enter);
-        let cancel = button == Some(VideoAction::Cancel) || input.key(Key::Escape);
-        if let Some(path) = d.overwrite.clone() {
-            if ok {
-                self.request_video_save(path);
-            } else if cancel {
-                d.overwrite = None;
-            }
-            return;
-        }
-        if cancel {
-            self.video_dialog = None;
-            return;
-        }
-        if input.key(Key::Tab) {
-            d.focus = match d.focus {
-                VideoField::Name => VideoField::Dir,
-                VideoField::Dir => VideoField::Name,
-            };
-        }
-        for field in [VideoField::Name, VideoField::Dir] {
-            if input.clicked(video_field_rect(field)) {
-                d.focus = field;
+        match dialog.handle(input) {
+            DialogResult::Open => {}
+            DialogResult::Cancelled => self.video_dialog = None,
+            DialogResult::Save(path) => {
+                // Remember the folder for the next video.
+                self.video_dir = dialog.dir.text.trim().to_owned();
+                self.video_dialog = None;
+                self.video_saving = true;
+                self.video_requests.push(path);
             }
         }
-        match d.focus {
-            VideoField::Name => d.name.handle(input),
-            VideoField::Dir => d.dir.handle(input),
-        };
-        if ok {
-            match crate::video::output_path(&d.dir.text, &d.name.text) {
-                Err(e) => d.error = Some(e),
-                Ok(path) if path.exists() => {
-                    d.error = None;
-                    d.overwrite = Some(path);
-                }
-                Ok(path) => self.request_video_save(path),
-            }
-        }
-    }
-
-    fn request_video_save(&mut self, path: PathBuf) {
-        if let Some(d) = self.video_dialog.take() {
-            self.video_dir = d.dir.text.trim().to_owned();
-        }
-        self.video_saving = true;
-        self.video_requests.push(path);
     }
 
     pub fn in_game(&self) -> bool {
@@ -484,6 +371,7 @@ mod tests {
     use super::*;
     use crate::editor::Modal;
     use crate::levels::Grid;
+    use crate::video_dialog;
     use macroquad::math::Rect;
 
     fn cell_rect(row: usize, col: usize) -> Rect {
@@ -703,7 +591,10 @@ mod tests {
         }
         app.handle(&chars("finns"));
         app.handle(&key(Key::Tab));
-        assert_eq!(app.video_dialog.as_ref().unwrap().focus, VideoField::Dir);
+        assert_eq!(
+            app.video_dialog.as_ref().unwrap().focus,
+            video_dialog::Field::Dir
+        );
         app.handle(&key(Key::Enter));
         assert_eq!(
             app.video_dialog.as_ref().unwrap().overwrite,
@@ -734,9 +625,11 @@ mod tests {
         let dir = temp_dir("app-video-folder");
         let mut app = finished_round(&dir);
         app.handle(&key(Key::V));
-        app.handle(&click(video_field_rect(VideoField::Dir).center()));
+        app.handle(&click(
+            video_dialog::field_rect(video_dialog::Field::Dir).center(),
+        ));
         app.handle(&chars("/klipp"));
-        app.handle(&click(video_dialog_buttons(false)[0].rect.center()));
+        app.handle(&click(video_dialog::buttons(false)[0].rect.center()));
         let expected_dir = dir.join("klipp");
         assert_eq!(app.video_requests.len(), 1);
         assert_eq!(app.video_requests[0].parent(), Some(expected_dir.as_path()));

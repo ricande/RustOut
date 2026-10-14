@@ -13,6 +13,7 @@ mod settings;
 mod store;
 mod ui;
 mod video;
+mod video_dialog;
 
 use macroquad::prelude::*;
 

@@ -33,7 +33,7 @@ the game itself, see [game_rules.md](game_rules.md).
                  │   app.rs   │   │ audio.rs   render.rs (Effects)  capture.rs │
                  └─┬───┬────┬─┘   └────────────────────────────┘
                    │   │    │
-          game.rs ◄┘   │    └► video dialog state (in app.rs)
+          game.rs ◄┘   │    └► video_dialog.rs
                        ▼
                   editor.rs ──► store.rs (files) ──► levels.rs (Layout, Grid)
 ```
@@ -41,7 +41,8 @@ the game itself, see [game_rules.md](game_rules.md).
 | Module        | Window-free | Responsibility |
 | ------------- | :---------: | -------------- |
 | `main.rs`     |             | Window setup, the frame loop, turning Macroquad input into `ui::Input`. |
-| `app.rs`      | ✓ | Screens (menu, custom levels, game, editor, test play) and the transitions between them; the "save video" dialog; the language switch. |
+| `app.rs`      | ✓ | Screens (menu, custom levels, game, editor, test play) and the transitions between them; opens the save video dialog; the language switch. |
+| `video_dialog.rs` | ✓ | The save video dialog: file name and folder fields, validation, the overwrite question. |
 | `game.rs`     | ✓ | Rules and physics: paddle, balls, bricks, bonuses, lives, levels, score. Emits `Event`s. |
 | `levels.rs`   | ✓ | Level data: `Layout` (name + cells), `Grid` (columns × rows over the build area), `Block`, `Bonus`, the built-in levels. |
 | `store.rs`    | ✓ | The JSON level format, validation, the level folder and the data folder. |
