@@ -75,6 +75,22 @@ pub enum Modal {
     },
 }
 
+/// How the player answered an open dialog this frame.
+struct Answer {
+    button: Option<DialogButton>,
+    /// OK, Yes or Enter.
+    ok: bool,
+    /// Cancel, No or Esc.
+    cancel: bool,
+}
+
+/// `value` moved by `delta`, kept within `range`.
+fn step_within(value: usize, delta: isize, range: &std::ops::RangeInclusive<usize>) -> usize {
+    value
+        .saturating_add_signed(delta)
+        .clamp(*range.start(), *range.end())
+}
+
 /// What the editor asks the rest of the app to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -496,112 +512,147 @@ impl Editor {
 
     fn handle_modal(&mut self, input: &Input, store: &LevelStore) -> Option<Outcome> {
         let button = clicked_button(&dialog_buttons(&self.modal), input);
-        let ok = button == Some(DialogButton::Ok) || input.key(Key::Enter);
-        let cancel = button == Some(DialogButton::Cancel) || input.key(Key::Escape);
-
-        match &mut self.modal {
-            Modal::None => {}
-            Modal::Grid { cols, rows } => {
-                let step = |v: &mut usize, d: isize, range: &std::ops::RangeInclusive<usize>| {
-                    *v = v
-                        .saturating_add_signed(d)
-                        .clamp(*range.start(), *range.end());
-                };
-                let pressed = |b: DialogButton, k: Key| button == Some(b) || input.key(k);
-                if pressed(DialogButton::ColsMinus, Key::Left) {
-                    step(cols, -1, &COLS_RANGE);
-                }
-                if pressed(DialogButton::ColsPlus, Key::Right) {
-                    step(cols, 1, &COLS_RANGE);
-                }
-                if pressed(DialogButton::RowsMinus, Key::Down) {
-                    step(rows, -1, &ROWS_RANGE);
-                }
-                if pressed(DialogButton::RowsPlus, Key::Up) {
-                    step(rows, 1, &ROWS_RANGE);
-                }
-                if cancel {
-                    self.modal = Modal::None;
-                } else if ok {
-                    let grid = match Grid::new(*cols, *rows) {
-                        Ok(grid) => grid,
-                        Err(e) => {
-                            self.error(e);
-                            return None;
-                        }
-                    };
-                    let lost = self.layout.blocks_outside(grid);
-                    if lost > 0 {
-                        // Ask first; "No" leaves the level exactly as it was.
-                        self.modal = Modal::Confirm {
-                            text: t!(
-                                "editor.grid_loses",
-                                cols = grid.cols,
-                                rows = grid.rows,
-                                lost = lost
-                            ),
-                            action: Pending::Resize(grid),
-                        };
-                    } else {
-                        self.modal = Modal::None;
-                        self.resize(grid);
-                    }
-                }
-            }
+        let answer = Answer {
+            button,
+            ok: button == Some(DialogButton::Ok) || input.key(Key::Enter),
+            cancel: button == Some(DialogButton::Cancel) || input.key(Key::Escape),
+        };
+        match &self.modal {
+            Modal::None => None,
             Modal::Message { .. } => {
-                if ok || cancel {
+                if answer.ok || answer.cancel {
                     self.modal = Modal::None;
                 }
+                None
             }
-            Modal::Confirm { action, .. } => {
-                if ok {
-                    let action = action.clone();
-                    return self.run(action, store);
-                }
-                if cancel {
-                    self.modal = Modal::None;
-                }
+            Modal::Confirm { .. } => self.handle_confirm(&answer, store),
+            Modal::Naming { .. } => {
+                self.handle_naming(input, &answer);
+                None
             }
-            Modal::Naming { field } => {
-                field.handle(input);
-                if cancel {
-                    self.modal = Modal::None;
-                } else if ok {
-                    let name = field.text.trim().to_owned();
-                    match store::validate_name(&name) {
-                        Err(e) => self.error(e),
-                        Ok(()) => {
-                            if name != self.layout.name {
-                                self.layout.name = name;
-                                self.dirty = true;
-                            }
-                            self.modal = Modal::None;
-                        }
+            Modal::Browse { .. } => self.handle_browse(input, &answer, store),
+            Modal::Grid { .. } => {
+                self.handle_grid_dialog(input, &answer);
+                None
+            }
+        }
+    }
+
+    fn handle_confirm(&mut self, answer: &Answer, store: &LevelStore) -> Option<Outcome> {
+        let Modal::Confirm { action, .. } = &self.modal else {
+            return None;
+        };
+        if answer.ok {
+            let action = action.clone();
+            return self.run(action, store);
+        }
+        if answer.cancel {
+            self.modal = Modal::None;
+        }
+        None
+    }
+
+    fn handle_naming(&mut self, input: &Input, answer: &Answer) {
+        let Modal::Naming { field } = &mut self.modal else {
+            return;
+        };
+        field.handle(input);
+        if answer.cancel {
+            self.modal = Modal::None;
+        } else if answer.ok {
+            let name = field.text.trim().to_owned();
+            match store::validate_name(&name) {
+                Err(e) => self.error(e),
+                Ok(()) => {
+                    if name != self.layout.name {
+                        self.layout.name = name;
+                        self.dirty = true;
                     }
-                }
-            }
-            Modal::Browse { list } => {
-                let activated = match list.handle(input) {
-                    ListResponse::Activate(i) => Some(i),
-                    ListResponse::None => ok.then_some(list.selected),
-                };
-                let chosen = activated
-                    .and_then(|i| list.items.get(i))
-                    .map(|item| (item.value.clone(), item.error.clone()));
-                if cancel {
                     self.modal = Modal::None;
-                } else if let Some((source, error)) = chosen {
-                    match error {
-                        Some(e) => self.error(t!("editor.invalid_file", error = e)),
-                        None => {
-                            self.modal = Modal::None;
-                            return self.guard(Pending::Open(source), t!("editor.ask_open"), store);
-                        }
-                    }
                 }
             }
         }
-        None
+    }
+
+    fn handle_browse(
+        &mut self,
+        input: &Input,
+        answer: &Answer,
+        store: &LevelStore,
+    ) -> Option<Outcome> {
+        let Modal::Browse { list } = &mut self.modal else {
+            return None;
+        };
+        let activated = match list.handle(input) {
+            ListResponse::Activate(i) => Some(i),
+            ListResponse::None => answer.ok.then_some(list.selected),
+        };
+        let chosen = activated
+            .and_then(|i| list.items.get(i))
+            .map(|item| (item.value.clone(), item.error.clone()));
+        if answer.cancel {
+            self.modal = Modal::None;
+            return None;
+        }
+        match chosen? {
+            (_, Some(e)) => {
+                self.error(t!("editor.invalid_file", error = e));
+                None
+            }
+            (source, None) => {
+                self.modal = Modal::None;
+                self.guard(Pending::Open(source), t!("editor.ask_open"), store)
+            }
+        }
+    }
+
+    fn handle_grid_dialog(&mut self, input: &Input, answer: &Answer) {
+        let Modal::Grid { cols, rows } = &mut self.modal else {
+            return;
+        };
+        let pressed = |b: DialogButton, k: Key| answer.button == Some(b) || input.key(k);
+        if pressed(DialogButton::ColsMinus, Key::Left) {
+            *cols = step_within(*cols, -1, &COLS_RANGE);
+        }
+        if pressed(DialogButton::ColsPlus, Key::Right) {
+            *cols = step_within(*cols, 1, &COLS_RANGE);
+        }
+        if pressed(DialogButton::RowsMinus, Key::Down) {
+            *rows = step_within(*rows, -1, &ROWS_RANGE);
+        }
+        if pressed(DialogButton::RowsPlus, Key::Up) {
+            *rows = step_within(*rows, 1, &ROWS_RANGE);
+        }
+        if answer.cancel {
+            self.modal = Modal::None;
+        } else if answer.ok {
+            let (cols, rows) = (*cols, *rows);
+            self.choose_grid(cols, rows);
+        }
+    }
+
+    /// Resizes to the chosen grid, or asks first if blocks would be lost.
+    fn choose_grid(&mut self, cols: usize, rows: usize) {
+        let grid = match Grid::new(cols, rows) {
+            Ok(grid) => grid,
+            Err(e) => return self.error(e),
+        };
+        let lost = self.layout.blocks_outside(grid);
+        if lost > 0 {
+            // Ask first; "No" leaves the level exactly as it was.
+            self.modal = Modal::Confirm {
+                text: t!(
+                    "editor.grid_loses",
+                    cols = grid.cols,
+                    rows = grid.rows,
+                    lost = lost
+                ),
+                action: Pending::Resize(grid),
+            };
+        } else {
+            self.modal = Modal::None;
+            self.resize(grid);
+        }
     }
 }
 
