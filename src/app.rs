@@ -13,7 +13,7 @@ use crate::levels::{self, Layout};
 use crate::store::{self, LevelStore};
 use crate::t;
 use crate::ui::{
-    button_row, clicked_button, Button, Input, Key, ListItem, ListResponse, ListState,
+    button_row, clicked_button, Button, Input, Key, ListItem, ListResponse, ListState, TextField,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,8 +134,8 @@ pub enum VideoField {
 
 /// Choosing a file name and folder for the last round's video.
 pub struct SaveDialog {
-    pub name: String,
-    pub dir: String,
+    pub name: TextField,
+    pub dir: TextField,
     pub focus: VideoField,
     pub error: Option<String>,
     /// The chosen file exists; waiting for "overwrite?" to be answered.
@@ -214,8 +214,11 @@ impl App {
 
     pub fn open_video_dialog(&mut self) {
         self.video_dialog = Some(SaveDialog {
-            name: crate::video::default_name(std::time::SystemTime::now()),
-            dir: self.video_dir.clone(),
+            name: TextField::new(
+                &crate::video::default_name(std::time::SystemTime::now()),
+                crate::video::MAX_NAME_LEN,
+            ),
+            dir: TextField::new(&self.video_dir, MAX_DIR_LEN),
             focus: VideoField::Name,
             error: None,
             overwrite: None,
@@ -265,20 +268,12 @@ impl App {
                 d.focus = field;
             }
         }
-        let (text, max) = match d.focus {
-            VideoField::Name => (&mut d.name, 100),
-            VideoField::Dir => (&mut d.dir, MAX_DIR_LEN),
+        match d.focus {
+            VideoField::Name => d.name.handle(input),
+            VideoField::Dir => d.dir.handle(input),
         };
-        for &ch in &input.chars {
-            if !ch.is_control() && text.chars().count() < max {
-                text.push(ch);
-            }
-        }
-        if input.key(Key::Backspace) {
-            text.pop();
-        }
         if ok {
-            match crate::video::output_path(&d.dir, &d.name) {
+            match crate::video::output_path(&d.dir.text, &d.name.text) {
                 Err(e) => d.error = Some(e),
                 Ok(path) if path.exists() => {
                     d.error = None;
@@ -291,7 +286,7 @@ impl App {
 
     fn request_video_save(&mut self, path: PathBuf) {
         if let Some(d) = self.video_dialog.take() {
-            self.video_dir = d.dir.trim().to_owned();
+            self.video_dir = d.dir.text.trim().to_owned();
         }
         self.video_saving = true;
         self.video_requests.push(path);
@@ -672,8 +667,8 @@ mod tests {
         app.handle(&click(VIDEO_BUTTON.center()));
         assert_eq!(app.game.state, State::GameOver);
         let d = app.video_dialog.as_ref().unwrap();
-        assert!(d.name.starts_with("rustout-"), "{}", d.name);
-        assert_eq!(d.dir, dir.display().to_string());
+        assert!(d.name.text.starts_with("rustout-"), "{}", d.name.text);
+        assert_eq!(d.dir.text, dir.display().to_string());
         app.handle(&key(Key::Escape));
         assert!(app.video_dialog.is_none());
 
@@ -698,7 +693,7 @@ mod tests {
         app.handle(&key(Key::V));
 
         // Type a name; Tab switches to the folder field.
-        app.video_dialog.as_mut().unwrap().name.clear();
+        app.video_dialog.as_mut().unwrap().name.text.clear();
         app.handle(&chars("min/runda"));
         app.handle(&key(Key::Enter));
         let err = app.video_dialog.as_ref().unwrap().error.clone().unwrap();
@@ -754,7 +749,7 @@ mod tests {
         assert!(app.can_save_video());
         app.handle(&key(Key::V));
         assert_eq!(
-            app.video_dialog.as_ref().unwrap().dir,
+            app.video_dialog.as_ref().unwrap().dir.text,
             expected_dir.display().to_string()
         );
     }

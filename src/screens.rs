@@ -64,6 +64,25 @@ fn px(v: f32) -> String {
     }
 }
 
+/// A one-line text box. Text that does not fit shows its end (where the
+/// caret is), starting with "...".
+fn draw_text_field(v: &View, r: Rect, text: &str, size: f32, caret: bool, border: Color) {
+    v.rect(r.x, r.y, r.w, r.h, BACKDROP);
+    v.rect_lines(r.x, r.y, r.w, r.h, 2.0, border);
+    let fits = |s: &str| v.text_size(s, size).width / v.scale <= r.w - 24.0;
+    let mut shown = format!("{text}_");
+    let mut skip = 0;
+    while !fits(&shown) && skip < text.chars().count() {
+        skip += 1;
+        shown = format!("...{}_", text.chars().skip(skip).collect::<String>());
+    }
+    shown.pop();
+    if caret {
+        shown.push('_');
+    }
+    v.text(&shown, r.x + 12.0, r.y + (r.h * 0.65).round(), size, TEXT);
+}
+
 /// Splits text into lines of at most `width` characters.
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
@@ -353,18 +372,10 @@ fn draw_modal(editor: &Editor, v: &View, fx: &Effects, pointer: Option<Vec2>) {
     let x = PANEL.x + 24.0;
     match &editor.modal {
         Modal::None => {}
-        Modal::Naming { text } => {
+        Modal::Naming { field } => {
+            let text = &field.text;
             let r = Rect::new(PANEL.x + 20.0, PANEL.y + 120.0, PANEL.w - 40.0, 52.0);
-            v.rect(r.x, r.y, r.w, r.h, BACKDROP);
-            v.rect_lines(r.x, r.y, r.w, r.h, 2.0, NEON);
-            let cursor = if fx.blink() { "_" } else { "" };
-            v.text(
-                &format!("{text}{cursor}"),
-                r.x + 12.0,
-                r.y + 34.0,
-                24.0,
-                TEXT,
-            );
+            draw_text_field(v, r, text, 24.0, fx.blink(), NEON);
             draw_wrapped(
                 v,
                 &t!(
@@ -501,35 +512,18 @@ pub fn draw_video_ui(app: &App, view: View, fx: &Effects, pointer: Option<Vec2>,
             draw_wrapped(v, &text, x, p.y + 110.0, 20.0, TEXT);
         } else {
             for (field, label, text) in [
-                (VideoField::Name, t!("video.name_label"), &d.name),
-                (VideoField::Dir, t!("video.folder_label"), &d.dir),
+                (VideoField::Name, t!("video.name_label"), &d.name.text),
+                (VideoField::Dir, t!("video.folder_label"), &d.dir.text),
             ] {
                 let r = video_field_rect(field);
                 v.text(label, r.x, r.y - 10.0, 18.0, with_alpha(TEXT, 0.8));
                 let focused = d.focus == field;
-                v.rect(r.x, r.y, r.w, r.h, BACKDROP);
                 let border = if focused {
                     ACCENT
                 } else {
                     with_alpha(NEON, 0.5)
                 };
-                v.rect_lines(r.x, r.y, r.w, r.h, 2.0, border);
-                // Show the end of long texts, where the caret is.
-                let max = 34;
-                let shown: String = if text.chars().count() > max {
-                    let skip = text.chars().count() - max;
-                    format!("...{}", text.chars().skip(skip + 3).collect::<String>())
-                } else {
-                    text.clone()
-                };
-                let caret = if focused && fx.blink() { "_" } else { "" };
-                v.text(
-                    &format!("{shown}{caret}"),
-                    r.x + 10.0,
-                    r.y + 31.0,
-                    20.0,
-                    TEXT,
-                );
+                draw_text_field(v, r, text, 20.0, focused && fx.blink(), border);
             }
             let info = t!("video.info");
             draw_wrapped(v, info, x, p.y + 290.0, 15.0, with_alpha(TEXT, 0.6));

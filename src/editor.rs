@@ -11,7 +11,7 @@ use crate::levels::{
 use crate::store::{self, LevelStore};
 use crate::t;
 use crate::ui::{
-    button_row, clicked_button, Button, Input, Key, ListItem, ListResponse, ListState,
+    button_row, clicked_button, Button, Input, Key, ListItem, ListResponse, ListState, TextField,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,7 +55,7 @@ pub enum Pending {
 pub enum Modal {
     None,
     Naming {
-        text: String,
+        field: TextField,
     },
     Browse {
         list: ListState<Source>,
@@ -332,7 +332,7 @@ impl Editor {
             Tool::New => return self.guard(Pending::New, t!("editor.ask_new"), store),
             Tool::Rename => {
                 self.modal = Modal::Naming {
-                    text: self.layout.name.clone(),
+                    field: TextField::new(&self.layout.name, MAX_NAME_LEN),
                 }
             }
             Tool::Grid => {
@@ -562,19 +562,12 @@ impl Editor {
                     self.modal = Modal::None;
                 }
             }
-            Modal::Naming { text } => {
-                for &ch in &input.chars {
-                    if !ch.is_control() && text.chars().count() < MAX_NAME_LEN {
-                        text.push(ch);
-                    }
-                }
-                if input.key(Key::Backspace) {
-                    text.pop();
-                }
+            Modal::Naming { field } => {
+                field.handle(input);
                 if cancel {
                     self.modal = Modal::None;
                 } else if ok {
-                    let name = text.trim().to_owned();
+                    let name = field.text.trim().to_owned();
                     match store::validate_name(&name) {
                         Err(e) => self.error(e),
                         Ok(()) => {
@@ -654,8 +647,8 @@ mod tests {
 
     fn rename(ed: &mut Editor, store: &LevelStore, name: &str) {
         ed.handle(&key(Key::F2), store);
-        if let Modal::Naming { text } = &mut ed.modal {
-            text.clear();
+        if let Modal::Naming { field } = &mut ed.modal {
+            field.text.clear();
         }
         ed.handle(&typed(name), store);
         ed.handle(&key(Key::Enter), store);

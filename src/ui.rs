@@ -87,6 +87,39 @@ impl Input {
     }
 }
 
+/// A one-line text field: typed characters (no control characters), Backspace
+/// and a length limit in characters.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TextField {
+    pub text: String,
+    pub max: usize,
+}
+
+impl TextField {
+    pub fn new(text: &str, max: usize) -> Self {
+        TextField {
+            text: text.chars().take(max).collect(),
+            max,
+        }
+    }
+
+    /// Applies this frame's typing; returns true if the text changed.
+    pub fn handle(&mut self, input: &Input) -> bool {
+        let before = self.text.len();
+        let mut changed = false;
+        for &ch in &input.chars {
+            if !ch.is_control() && self.text.chars().count() < self.max {
+                self.text.push(ch);
+                changed = true;
+            }
+        }
+        if input.key(Key::Backspace) {
+            changed |= self.text.pop().is_some();
+        }
+        changed || self.text.len() != before
+    }
+}
+
 pub struct Button<A> {
     pub rect: Rect,
     pub label: &'static str,
@@ -270,6 +303,28 @@ mod tests {
         assert!(matches!(l.handle(&click), ListResponse::None));
         assert_eq!(l.selected, 1);
         assert!(matches!(l.handle(&click), ListResponse::Activate(1)));
+    }
+
+    #[test]
+    fn text_field_types_and_respects_the_limit() {
+        let mut f = TextField::new("abcdef", 4);
+        assert_eq!(f.text, "abcd", "a long start text is cut");
+        let typed = Input {
+            chars: vec!['x', '\n', '\u{8}'],
+            ..Default::default()
+        };
+        assert!(!f.handle(&typed), "full: nothing is added");
+        assert!(f.handle(&keys(Key::Backspace)));
+        assert!(f.handle(&typed));
+        assert_eq!(f.text, "abcx", "control characters are ignored");
+        let mut empty = TextField::new("", 10);
+        assert!(!empty.handle(&keys(Key::Backspace)));
+        let åäö = Input {
+            chars: "åäö".chars().collect(),
+            ..Default::default()
+        };
+        empty.handle(&åäö);
+        assert_eq!(empty.text, "åäö");
     }
 
     #[test]

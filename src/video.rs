@@ -21,7 +21,8 @@ use crate::t;
 pub const WIDTH: u32 = 1080;
 pub const HEIGHT: u32 = 1920;
 pub const FPS: u32 = 60;
-const MAX_NAME_LEN: usize = 100;
+/// Longest video file name, in characters.
+pub const MAX_NAME_LEN: usize = 100;
 const TEMP_PREFIX: &str = "rustout-rec-";
 
 /// Decides how many video frames are due as game time passes, so the video
