@@ -30,6 +30,37 @@ pub enum Key {
     Num4,
 }
 
+impl Key {
+    /// A key by its name in scripts: `enter`, `esc`, `space`, `up`, `f2`, `1` …
+    pub fn from_name(name: &str) -> Option<Key> {
+        Some(match name.to_lowercase().as_str() {
+            "up" => Key::Up,
+            "down" => Key::Down,
+            "left" => Key::Left,
+            "right" => Key::Right,
+            "enter" | "return" => Key::Enter,
+            "esc" | "escape" => Key::Escape,
+            "space" => Key::Space,
+            "backspace" => Key::Backspace,
+            "tab" => Key::Tab,
+            "f2" => Key::F2,
+            "p" => Key::P,
+            "r" => Key::R,
+            "n" => Key::N,
+            "o" => Key::O,
+            "s" => Key::S,
+            "t" => Key::T,
+            "g" => Key::G,
+            "v" => Key::V,
+            "1" => Key::Num1,
+            "2" => Key::Num2,
+            "3" => Key::Num3,
+            "4" => Key::Num4,
+            _ => return None,
+        })
+    }
+}
+
 /// One frame of input, already converted to field coordinates.
 #[derive(Clone, Debug, Default)]
 pub struct Input {

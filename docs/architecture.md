@@ -51,6 +51,7 @@ the game itself, see [game_rules.md](game_rules.md).
 | `settings.rs` | ✓ | `settings.json` (the chosen language). |
 | `video.rs`    | ✓¹ | Recording via an `ffmpeg` process, the frame clock, sound mixing, saving, default folder and file names. |
 | `screen.rs`   | ✓ | Picks the start window size from the screen's work area. |
+| `script.rs`   | ✓ | Script mode: turns a text script into `ui::Input` per frame, for repeatable UI checks with screenshots. |
 | `render.rs`   |   | `View` (field ↔ window), drawing of the game, particles and other effects. |
 | `screens.rs`  |   | Drawing of the menu, level list, editor and the video UI. |
 | `audio.rs`    |   | The synthesizer (window-free) and playback through Macroquad. |
@@ -185,8 +186,10 @@ the defaults.
 - Tests that use files create their own folders under the system temp folder.
 - Tests run on many threads; since the language is thread-local, a test that
   needs Swedish sets it on its own thread.
-- Drawing code is not unit tested. It has been checked by running the real
-  binary with scripted input and saving screenshots.
+- Drawing code is not unit tested. It is checked by running the real binary
+  in **script mode** (`RUSTOUT_SCRIPT`, see `src/script.rs`): a text script
+  replaces mouse and keyboard, the frame time is fixed so runs repeat exactly,
+  and `shot` steps save screenshots. `scripts/ui_tour.txt` visits every screen.
 
 ## How to …
 

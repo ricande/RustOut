@@ -1,0 +1,59 @@
+# A tour of every screen, for checking the UI with screenshots:
+#   RUSTOUT_SCRIPT=scripts/ui_tour.txt RUSTOUT_SHOTS=/tmp/shots cargo run --release
+# Use RUSTOUT_LEVEL_DIR / RUSTOUT_VIDEO_DIR to keep your own files out of it.
+# Positions are field coordinates (540 x 960). The default grid is 12 x 24:
+# cell (row, col) has its centre at (22.5 + 45 col, 142 + 24 row).
+
+5   shot 01-menu
+6   key down
+7   key enter                 # Custom levels
+12  shot 02-custom
+13  key esc
+15  key down
+16  key enter                 # Level editor
+20  shot 03-editor-empty
+
+# Paint a row of 2-hit blocks, a stone and a bonus.
+21  key 2
+22  press 22 142
+23  move 517 142
+24  release
+25  key 4
+26  click 247 190
+27  click 416 727             # bonus palette: Multiball
+28  click 67 142
+29  move 292 286              # hover a cell
+30  shot 04-editor-painted
+
+31  key g                     # grid dialog
+33  key left
+34  key down
+36  shot 05-grid-dialog
+37  key esc
+38  key f2                    # name dialog
+40  type My level
+42  shot 06-name-dialog
+43  key enter
+44  key o                     # open dialog
+46  shot 07-open-dialog
+47  key esc
+48  key esc                   # leave: asks about unsaved changes
+50  shot 08-confirm
+51  key esc                   # no
+
+52  key t                     # test play
+56  shot 09-serve
+57  key space
+58  autopilot on
+200 shot 10-play
+201 key p
+203 shot 11-paused
+204 key p
+205 key esc                   # back to the editor
+207 key esc
+208 key enter                 # leave without saving
+210 shot 12-menu-with-video
+211 click 270 718             # Save last video
+214 shot 13-video-dialog      # (contains the current time)
+215 key esc
+216 quit

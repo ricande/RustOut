@@ -6,6 +6,13 @@ All notable changes to RustOut are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Script mode for checking the UI: `RUSTOUT_SCRIPT` runs a text script instead
+  of real input with a fixed frame time and saves screenshots
+  (`RUSTOUT_SHOTS`); `RUSTOUT_WINDOW` forces a window size. `scripts/ui_tour.txt`
+  visits every screen.
+
 ## [0.1.0] - 2026-10-14
 
 The first version, built in one go.

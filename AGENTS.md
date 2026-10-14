@@ -33,6 +33,9 @@ user's real data:
 | `RUSTOUT_LEVEL_DIR` | folder for custom level files            |
 | `RUSTOUT_VIDEO_DIR` | default folder for saved videos          |
 | `RUSTOUT_LANG`      | `en` or `sv`, overrides the saved choice |
+| `RUSTOUT_SCRIPT`    | run a UI script instead of real input (see below) |
+| `RUSTOUT_SHOTS`     | folder for the script's screenshots (default `shots`) |
+| `RUSTOUT_WINDOW`    | force a window size, e.g. `1000x640`     |
 
 ## Rules
 
@@ -69,11 +72,25 @@ user's real data:
 ## Verifying UI changes
 
 Drawing code has no unit tests. When a change affects what is shown, run the
-real game and look at it. A practical way that does not disturb the user's
-desktop: temporarily feed scripted `ui::Input` in `main.rs` and save frames with
-`get_screen_data().export_png(...)`, then restore `main.rs` exactly (compare
-with a copy). Check both languages (`RUSTOUT_LANG=en` / `sv`) and both a tall
-and a wide window, since the view is letterboxed.
+real game and look at it. Use the **script mode** rather than the real mouse
+and keyboard (it does not disturb the user's desktop and is repeatable):
+
+```bash
+RUSTOUT_SCRIPT=scripts/ui_tour.txt RUSTOUT_SHOTS=/tmp/shots \
+RUSTOUT_LEVEL_DIR=/tmp/levels RUSTOUT_VIDEO_DIR=/tmp/videos \
+cargo run --release
+```
+
+- `scripts/ui_tour.txt` visits every screen and saves numbered screenshots.
+  The command language is documented at the top of `src/script.rs`; write a
+  new script for a specific check.
+- A scripted run uses a fixed frame time, so the same script on the same code
+  gives the same pictures. For a refactoring, take screenshots before and
+  after and compare them (e.g. `compare -metric AE a.png b.png null:`).
+  Expect differences only where the current time is shown (the video dialog)
+  and, in non-integer window scales, at text edges.
+- Check both languages (`RUSTOUT_LANG=en` / `sv`) and a wide window
+  (`RUSTOUT_WINDOW=1000x640`), since the view is letterboxed.
 
 Say clearly what you verified by running the game and what only by tests.
 
