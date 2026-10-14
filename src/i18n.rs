@@ -319,25 +319,33 @@ mod tests {
     /// is caught here rather than shown to the player.
     #[test]
     fn every_key_used_in_the_code_exists() {
-        let sources = [
-            include_str!("app.rs"),
-            include_str!("audio.rs"),
-            include_str!("capture.rs"),
-            include_str!("editor.rs"),
-            include_str!("game.rs"),
-            include_str!("levels.rs"),
-            include_str!("main.rs"),
-            include_str!("render.rs"),
-            include_str!("screens.rs"),
-            include_str!("settings.rs"),
-            include_str!("store.rs"),
-            include_str!("ui.rs"),
-            include_str!("video.rs"),
-        ];
+        // Every Rust file under src/, read at test time so new files are
+        // checked without anyone having to list them here.
+        fn rust_files(dir: &std::path::Path, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    rust_files(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("i18n.rs")
+                {
+                    out.push(std::fs::read_to_string(&path).unwrap());
+                }
+            }
+        }
+        let mut sources = Vec::new();
+        rust_files(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut sources,
+        );
+        assert!(
+            sources.len() >= 15,
+            "found only {} source files",
+            sources.len()
+        );
         let known: BTreeSet<&str> = CATALOG.iter().map(|&(k, _, _)| k).collect();
         let mut used = 0;
-        for src in sources {
-            let mut rest = src;
+        for src in &sources {
+            let mut rest = src.as_str();
             while let Some(at) = rest.find("t!(\"") {
                 // Skip `format!(` and other macros that merely end in `t!(`.
                 let standalone = rest[..at]

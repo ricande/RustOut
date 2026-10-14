@@ -54,7 +54,7 @@ the game itself, see [game_rules.md](game_rules.md).
 | `screen.rs`   | ✓ | Picks the start window size from the screen's work area. |
 | `script.rs`   | ✓ | Script mode: turns a text script into `ui::Input` per frame, for repeatable UI checks with screenshots. |
 | `render.rs`   |   | `View` (field ↔ window), drawing of the game, particles and other effects. |
-| `screens.rs`  |   | Drawing of the menu, level list, editor and the video UI. |
+| `screens/`    |   | Drawing of everything but the game: `menu.rs` (menu, level list), `editor.rs`, `video.rs` (REC marker, save dialog, messages) and the shared widgets in `mod.rs`. |
 | `audio.rs`    |   | The synthesizer (window-free) and playback through Macroquad. |
 | `capture.rs`  |   | Draws video frames off screen and drives `video::Recorder` for each round. |
 
@@ -80,7 +80,7 @@ the game itself, see [game_rules.md](game_rules.md).
    start, record or finish the round's video, and draws a 1080 × 1920 frame
    off screen when one is due.
 7. **Draw.** The current screen is drawn (`render::draw` or a function in
-   `screens.rs`), then the video UI on top.
+   `screens/`), then the video UI on top.
 8. **Saves.** `Capture::poll_saves` starts requested video saves and reports
    finished ones back to `App`.
 
@@ -213,5 +213,5 @@ formats with sensible defaults, add a test that an old file still loads, and
 describe the change in the README and the changelog.
 
 **Add a screen.** Add a `Screen` variant, handle its input in `App::handle`,
-draw it from `main.rs` (usually a new function in `screens.rs`) and define its
+draw it from `main.rs` (usually a new file in `screens/`) and define its
 buttons as a function that both sides use.

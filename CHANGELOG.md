@@ -13,6 +13,14 @@ All notable changes to RustOut are documented here. The format follows
   (`RUSTOUT_SHOTS`); `RUSTOUT_WINDOW` forces a window size. `scripts/ui_tour.txt`
   visits every screen.
 
+### Changed
+
+- Internal restructuring, no change in behaviour: a shared `TextField` widget
+  for the level name and video dialogs; the save video dialog moved to its own
+  module; the editor's dialog handling split into one function per dialog; the
+  drawing code split into `screens/` (menu, editor, video UI, shared widgets).
+  The translation test now checks every source file automatically.
+
 ## [0.1.0] - 2026-10-14
 
 The first version, built in one go.

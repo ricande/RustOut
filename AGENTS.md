@@ -42,7 +42,7 @@ user's real data:
 1. **Keep logic window-free.** Game rules, the editor, screens' behaviour,
    files and translations must not call Macroquad's window, graphics, input or
    audio APIs. They take `ui::Input` / `game::Controls` and are tested headlessly.
-   Only `main.rs`, `render.rs`, `screens.rs`, `capture.rs` and the playback
+   Only `main.rs`, `render.rs`, `screens/`, `capture.rs` and the playback
    part of `audio.rs` talk to Macroquad.
 2. **Use field coordinates.** Everything is in the logical 540 × 960 field.
    Never use window pixels outside `render::View`. Define button rectangles once,
