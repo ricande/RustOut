@@ -6,8 +6,15 @@ All notable changes to RustOut are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-18
+
 ### Added
 
+- GitHub Actions CI: fmt, clippy and tests on Linux (with FFmpeg), clippy and
+  tests on Windows and macOS, a check of the vendored miniquad and a build
+  with Rust 1.87.
+- Regression tests for an encoder that hangs, one that is too slow, one that
+  keeps up, a hanging startup check, cancelling, shutdown and full pipes.
 - Script mode for checking the UI: `RUSTOUT_SCRIPT` runs a text script instead
   of real input with a fixed frame time and saves screenshots
   (`RUSTOUT_SHOTS`); `RUSTOUT_WINDOW` forces a window size. `scripts/ui_tour.txt`
@@ -20,6 +27,25 @@ All notable changes to RustOut are documented here. The format follows
   module; the editor's dialog handling split into one function per dialog; the
   drawing code split into `screens/` (menu, editor, video UI, shared widgets).
   The translation test now checks every source file automatically.
+
+### Fixed
+
+- **Recording could freeze the game.** If ffmpeg kept running but stopped
+  reading frames, the game waited forever for room in the frame queue; if it
+  encoded slower than real time, the game slowed down to its pace. Now no
+  frame waits for the encoder: if the bounded queue (about 0.4 s, repeated
+  pictures stored once) is full, ffmpeg is stopped, the round continues at
+  full speed and the error is shown. No frames are dropped, so a saved video
+  is complete and in sync.
+- The ffmpeg check at startup has a 5 s time limit; finishing and saving a
+  video a 60 s limit; ffmpeg's output is drained so a full pipe cannot block
+  it; discarding a recording and closing the game stop ffmpeg at once.
+- Text could turn into black rectangles for the rest of the run
+  (not-fl3/macroquad#1006). RustOut now builds against miniquad 0.4.11 with
+  the fix proposed upstream (`vendor/`, `[patch.crates-io]`); see
+  docs/UPSTREAM_FIXES.md.
+- The minimum Rust version is 1.87, not 1.82: the dependency `fontdue` needs
+  1.87. It is now declared as `rust-version` in `Cargo.toml`.
 
 ## [0.1.0] - 2026-10-14
 

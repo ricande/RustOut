@@ -33,9 +33,10 @@ pub struct Capture {
 impl Capture {
     pub fn new(samples: Vec<Vec<f32>>, app: &mut App) -> Self {
         video::remove_old_temp_files();
-        let enabled = video::ffmpeg_available();
-        if !enabled {
-            app.video_unavailable = Some(t!("video.no_ffmpeg").into());
+        let unavailable = video::check_ffmpeg().err();
+        let enabled = unavailable.is_none();
+        if unavailable.is_some() {
+            app.video_unavailable = unavailable;
         }
         let target = render_target(WIDTH, HEIGHT);
         target.texture.set_filter(FilterMode::Linear);
@@ -104,7 +105,10 @@ impl Capture {
                 }
             }
         }
-        if plan.finish {
+        // A crashed, hung or too slow encoder is stopped at once; the game
+        // goes on and `end_round` reports why.
+        let failed = self.recorder.as_ref().is_some_and(Recorder::failed);
+        if plan.finish || failed {
             self.end_round(app);
         }
     }
@@ -172,6 +176,8 @@ impl Capture {
 
 impl Drop for Capture {
     fn drop(&mut self) {
+        // Every running ffmpeg wait stops at once.
+        video::shut_down();
         if let Some(rec) = self.recorder.take() {
             rec.cancel();
         }

@@ -7,13 +7,14 @@
 //! asks for it is the round saved: video and sound are combined into the
 //! chosen file. Unsaved recordings are deleted.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::{sync_channel, SyncSender};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
+use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::audio::{wav_bytes, SAMPLE_RATE, VOLUME};
 use crate::t;
@@ -24,6 +25,16 @@ pub const FPS: u32 = 60;
 /// Longest video file name, in characters.
 pub const MAX_NAME_LEN: usize = 100;
 const TEMP_PREFIX: &str = "rustout-rec-";
+/// Pictures waiting for the encoder (8 MB each, however often they are
+/// repeated): about 0.4 s of video, at most about 200 MB, used only while
+/// the encoder is behind. Bounded, so memory stays bounded.
+const QUEUE_PICTURES: usize = 24;
+/// Longest wait for ffmpeg to finish or save a file.
+const FINISH_TIMEOUT: Duration = Duration::from_secs(60);
+/// Longest wait for the ffmpeg check at startup.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long to wait for a pipe thread after its process has ended.
+const PIPE_GRACE: Duration = Duration::from_secs(1);
 
 /// Decides how many video frames are due as game time passes, so the video
 /// runs at exactly `FPS` whatever the monitor's refresh rate is.
@@ -47,10 +58,6 @@ impl FrameClock {
 
     pub fn time(&self) -> f64 {
         self.time
-    }
-
-    pub fn frames(&self) -> u64 {
-        self.written
     }
 }
 
@@ -130,13 +137,26 @@ pub fn plan_frame(s: RoundState) -> FramePlan {
     }
 }
 
-pub fn ffmpeg_available() -> bool {
-    Command::new("ffmpeg")
-        .arg("-version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+/// Checks that ffmpeg can be started and has the H.264 encoder. The error
+/// is a player-readable reason.
+pub fn check_ffmpeg() -> Result<(), String> {
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-hide_banner", "-encoders"]);
+    check_encoders(cmd, CHECK_TIMEOUT)
+}
+
+/// Runs `cmd` (an `ffmpeg -encoders`) and looks for libx264 in its output.
+fn check_encoders(mut cmd: Command, timeout: Duration) -> Result<(), String> {
+    cmd.stdin(Stdio::null());
+    let Ok(mut process) = Process::spawn(cmd) else {
+        return Err(t!("video.no_ffmpeg").into());
+    };
+    match process.wait(timeout, &SHUTDOWN) {
+        Ok(exit) if exit.status.success() && exit.stdout.contains("libx264") => Ok(()),
+        Ok(exit) if exit.status.success() => Err(t!("video.no_x264").into()),
+        Ok(_) => Err(t!("video.no_ffmpeg").into()),
+        Err(_) => Err(t!("video.no_answer").into()),
+    }
 }
 
 fn temp_path(ext: &str) -> PathBuf {
@@ -165,32 +185,139 @@ pub fn remove_old_temp_files() {
     }
 }
 
-/// Runs ffmpeg and turns a failure into a readable message.
-fn run_ffmpeg(args: &[&str]) -> Result<(), String> {
-    let out = Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error", "-y"])
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| t!("video.ffmpeg_start", error = e))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(t!(
-            "video.ffmpeg_failed",
-            error = String::from_utf8_lossy(&out.stderr).trim()
-        ))
+/// Set when the program closes: every wait for ffmpeg stops at once and
+/// kills the process (see `shut_down`).
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// Stops all running ffmpeg work. Called when the program closes, so no
+/// worker thread can keep it waiting.
+pub fn shut_down() {
+    SHUTDOWN.store(true, Ordering::Relaxed);
+}
+
+/// A child process whose stdout and stderr are drained by reader threads,
+/// so a full pipe can never make it block.
+struct Process {
+    child: Child,
+    stdout: Option<JoinHandle<Vec<u8>>>,
+    stderr: Option<JoinHandle<Vec<u8>>>,
+}
+
+/// How a `Process` ended.
+struct Exit {
+    status: ExitStatus,
+    stdout: String,
+    stderr: String,
+}
+
+fn drain(mut pipe: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        bytes
+    })
+}
+
+/// Joins `handle` if it finishes within `grace`; otherwise leaves it, so a
+/// thread stuck on a pipe can never block the caller.
+fn join_within<T>(handle: JoinHandle<T>, grace: Duration) -> Option<std::thread::Result<T>> {
+    let deadline = Instant::now() + grace;
+    while !handle.is_finished() {
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    Some(handle.join())
+}
+
+impl Process {
+    /// Starts `cmd` with stdout and stderr captured (stdin as set on `cmd`).
+    fn spawn(mut cmd: Command) -> Result<Process, String> {
+        let mut child = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| t!("video.ffmpeg_start", error = e))?;
+        let stdout = child.stdout.take().map(drain);
+        let stderr = child.stderr.take().map(drain);
+        Ok(Process {
+            child,
+            stdout,
+            stderr,
+        })
+    }
+
+    /// Waits for the process to exit. After `timeout`, or as soon as
+    /// `cancel` is set, it is killed and an error returned.
+    fn wait(&mut self, timeout: Duration, cancel: &AtomicBool) -> Result<Exit, String> {
+        let deadline = Instant::now() + timeout;
+        let status = loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline && !cancel.load(Ordering::Relaxed) => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Ok(None) => {
+                    self.kill();
+                    return Err(t!("video.ffmpeg_timeout").into());
+                }
+                Err(e) => {
+                    self.kill();
+                    return Err(t!("video.ffmpeg_failed", error = e));
+                }
+            }
+        };
+        let text = |pipe: Option<JoinHandle<Vec<u8>>>| {
+            pipe.and_then(|h| join_within(h, PIPE_GRACE))
+                .and_then(Result::ok)
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .unwrap_or_default()
+        };
+        let stdout = text(self.stdout.take());
+        let stderr = text(self.stderr.take());
+        Ok(Exit {
+            status,
+            stdout,
+            stderr,
+        })
+    }
+
+    fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
+/// Runs ffmpeg to completion and turns a failure into a readable message.
+fn run_ffmpeg(args: &[&str]) -> Result<(), String> {
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-hide_banner", "-loglevel", "error", "-y"])
+        .args(args)
+        .stdin(Stdio::null());
+    let exit = Process::spawn(cmd)?.wait(FINISH_TIMEOUT, &SHUTDOWN)?;
+    if exit.status.success() {
+        Ok(())
+    } else {
+        Err(t!("video.ffmpeg_failed", error = exit.stderr.trim()))
+    }
+}
+
+/// A picture and how many video frames show it.
+type Picture = (Arc<Vec<u8>>, u64);
+
 /// An ongoing recording of one round.
 pub struct Recorder {
-    child: Child,
-    frames_tx: Option<SyncSender<Vec<u8>>>,
+    process: Process,
+    frames_tx: Option<SyncSender<Picture>>,
     writer: Option<JoinHandle<std::io::Result<()>>>,
     path: PathBuf,
     clock: FrameClock,
+    /// Video frames accepted into the queue: the length of the video.
+    frames: u64,
     hits: Vec<SoundHit>,
+    /// The encoder could not keep up and was stopped.
+    behind: bool,
 }
 
 impl Recorder {
@@ -209,30 +336,35 @@ impl Recorder {
         }
         cmd.args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"])
             .args(["-pix_fmt", "yuv420p", "-an"])
-            .arg(&path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| t!("video.ffmpeg_start", error = e))?;
-        let mut stdin = child.stdin.take().expect("piped stdin");
-        // A small queue: encoding runs in parallel with the game, and if
-        // ffmpeg falls behind the game waits rather than dropping frames.
-        let (tx, rx) = sync_channel::<Vec<u8>>(4);
+            .arg(&path);
+        Recorder::spawn(cmd, path, QUEUE_PICTURES)
+    }
+
+    /// Starts `cmd` as the encoder, feeding it frames on stdin through a
+    /// queue of at most `queue` pictures.
+    fn spawn(mut cmd: Command, path: PathBuf, queue: usize) -> Result<Recorder, String> {
+        cmd.stdin(Stdio::piped());
+        let mut process = Process::spawn(cmd)?;
+        let mut stdin = process.child.stdin.take().expect("piped stdin");
+        // A small, bounded queue: encoding runs in parallel with the game.
+        let (tx, rx) = sync_channel::<Picture>(queue);
         let writer = std::thread::spawn(move || {
-            for frame in rx {
-                stdin.write_all(&frame)?;
+            for (picture, copies) in rx {
+                for _ in 0..copies {
+                    stdin.write_all(&picture)?;
+                }
             }
             Ok(())
         });
         Ok(Recorder {
-            child,
+            process,
             frames_tx: Some(tx),
             writer: Some(writer),
             path,
             clock: FrameClock::default(),
+            frames: 0,
             hits: Vec::new(),
+            behind: false,
         })
     }
 
@@ -241,23 +373,36 @@ impl Recorder {
         self.clock.advance(dt)
     }
 
-    /// Queues the current picture `copies` times (RGBA, `WIDTH` × `HEIGHT`).
+    /// Queues the current picture for `copies` video frames (RGBA,
+    /// `WIDTH` × `HEIGHT`) without ever waiting.
+    ///
+    /// If the bounded queue is full, the encoder has fallen behind (it hangs
+    /// or cannot encode in real time). Frames are never dropped, since the
+    /// video would then be shorter than its sound; instead the encoder is
+    /// stopped and the recording fails (`failed`). So the video is either
+    /// complete or absent, and the game never waits for ffmpeg.
     pub fn push_frame(&mut self, rgba: Vec<u8>, copies: u64) {
         debug_assert_eq!(rgba.len(), (WIDTH * HEIGHT * 4) as usize);
-        let Some(tx) = &self.frames_tx else { return };
-        let mut frame = Some(rgba);
-        for i in 0..copies {
-            let data = if i + 1 == copies {
-                frame.take().unwrap_or_default()
-            } else {
-                frame.clone().unwrap_or_default()
-            };
-            if tx.send(data).is_err() {
-                // ffmpeg has stopped; `finish` reports why.
-                self.frames_tx = None;
-                return;
-            }
+        if copies == 0 {
+            return;
         }
+        let Some(tx) = &self.frames_tx else { return };
+        match tx.try_send((Arc::new(rgba), copies)) {
+            Ok(()) => self.frames += copies,
+            Err(TrySendError::Full(_)) => {
+                // Stopping the encoder also ends the writer thread.
+                self.behind = true;
+                self.frames_tx = None;
+                self.process.kill();
+            }
+            Err(TrySendError::Disconnected(_)) => self.frames_tx = None,
+        }
+    }
+
+    /// The encoder stopped (crashed, hung or fell behind) and no more
+    /// frames can be recorded; `finish` gives the reason.
+    pub fn failed(&self) -> bool {
+        self.frames_tx.is_none()
     }
 
     /// Notes a sound effect at the current recording time.
@@ -269,14 +414,17 @@ impl Recorder {
     }
 
     fn close(&mut self) -> Result<(), String> {
+        // Closing the queue ends the writer thread, which closes ffmpeg's
+        // input so it finishes the file.
         self.frames_tx = None;
-        let wrote = self.writer.take().map(|w| w.join());
-        let out = self
-            .child
-            .wait_with_output_ref()
-            .map_err(|e| format!("ffmpeg: {e}"))?;
-        if !out.0.success() {
-            return Err(t!("video.ffmpeg_failed", error = out.1.trim()));
+        let waited = self.process.wait(FINISH_TIMEOUT, &SHUTDOWN);
+        let wrote = self.writer.take().and_then(|w| join_within(w, PIPE_GRACE));
+        if self.behind {
+            return Err(t!("video.encoder_behind").into());
+        }
+        let exit = waited?;
+        if !exit.status.success() {
+            return Err(t!("video.ffmpeg_failed", error = exit.stderr.trim()));
         }
         match wrote {
             Some(Ok(Err(e))) => Err(t!("video.pipe", error = e)),
@@ -288,46 +436,33 @@ impl Recorder {
     /// Ends the recording and waits for the encoder to finish the file.
     pub fn finish(mut self) -> Result<Recording, String> {
         let result = self.close();
-        let frames = self.clock.frames();
+        let frames = self.frames;
         let path = std::mem::take(&mut self.path);
-        match result {
-            Ok(()) if frames > 0 => Ok(Recording {
-                video: path,
-                hits: std::mem::take(&mut self.hits),
-                duration: frames as f64 / FPS as f64,
-            }),
-            Ok(()) => {
-                let _ = std::fs::remove_file(&path);
-                Err(t!("video.empty").into())
+        let result = match result {
+            Ok(()) if frames > 0 => {
+                return Ok(Recording {
+                    video: path,
+                    hits: std::mem::take(&mut self.hits),
+                    duration: frames as f64 / FPS as f64,
+                })
             }
-            Err(e) => {
-                let _ = std::fs::remove_file(&path);
-                Err(e)
-            }
-        }
+            _ if frames == 0 => Err(t!("video.empty").into()),
+            Ok(()) => unreachable!("frames > 0 is handled above"),
+            Err(e) => Err(e),
+        };
+        let _ = std::fs::remove_file(&path);
+        result
     }
 
-    /// Stops and throws the recording away.
-    pub fn cancel(self) {
-        if let Ok(rec) = self.finish() {
-            rec.discard();
+    /// Stops the encoder at once and throws the recording away, without
+    /// waiting for ffmpeg to finish the file.
+    pub fn cancel(mut self) {
+        self.frames_tx = None;
+        self.process.kill();
+        if let Some(writer) = self.writer.take() {
+            let _ = join_within(writer, PIPE_GRACE);
         }
-    }
-}
-
-/// `Child::wait_with_output` takes `self`; this works on `&mut Child`.
-trait WaitRef {
-    fn wait_with_output_ref(&mut self) -> std::io::Result<(std::process::ExitStatus, String)>;
-}
-
-impl WaitRef for Child {
-    fn wait_with_output_ref(&mut self) -> std::io::Result<(std::process::ExitStatus, String)> {
-        let mut err = String::new();
-        if let Some(mut stderr) = self.stderr.take() {
-            use std::io::Read;
-            let _ = stderr.read_to_string(&mut err);
-        }
-        Ok((self.wait()?, err))
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -537,6 +672,222 @@ pub fn display_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Tests that encode video or measure waiting take turns, so they do
+    /// not starve each other of CPU on small test machines.
+    fn heavy() -> MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Whether the tests that need a real ffmpeg can run. Without it they
+    /// are skipped, unless `REQUIRE_FFMPEG` is set (as in CI): then a
+    /// missing ffmpeg is a failure instead of a silent skip.
+    fn ffmpeg_for_tests() -> bool {
+        match check_ffmpeg() {
+            Ok(()) => true,
+            Err(e) if std::env::var_os("REQUIRE_FFMPEG").is_some() => {
+                panic!("REQUIRE_FFMPEG is set, but: {e}")
+            }
+            Err(_) => {
+                eprintln!("ffmpeg missing: skipping this test");
+                false
+            }
+        }
+    }
+
+    /// Queues a picture, waiting for room: tests that produce frames faster
+    /// than real time use this to test the file, not the machine's speed.
+    fn push_waiting(rec: &mut Recorder, rgba: Vec<u8>, copies: u64) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let tx = rec.frames_tx.clone().expect("recording");
+        let mut picture = (Arc::new(rgba), copies);
+        loop {
+            match tx.try_send(picture) {
+                Ok(()) => {
+                    rec.frames += copies;
+                    return;
+                }
+                Err(TrySendError::Full(back)) => picture = back,
+                Err(TrySendError::Disconnected(_)) => return,
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the encoder took nothing for 30 s"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// An encoder run by `sh -c script`, fed frames on stdin.
+    #[cfg(unix)]
+    fn fake_encoder(script: &str) -> Recorder {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", script]);
+        Recorder::spawn(cmd, temp_path("mp4"), QUEUE_PICTURES).unwrap()
+    }
+
+    #[cfg(unix)]
+    fn process_is_gone(pid: u32) -> bool {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| !s.success())
+    }
+
+    /// Feeds `rec` one picture per 1/60 s of real time, like the game, for
+    /// up to `seconds`. Returns the longest time one `push_frame` took.
+    #[cfg(unix)]
+    fn play_in_real_time(rec: &mut Recorder, seconds: f64) -> Duration {
+        let frame = vec![0u8; (WIDTH * HEIGHT * 4) as usize];
+        let mut longest = Duration::ZERO;
+        let start = Instant::now();
+        let mut n = 0;
+        while start.elapsed().as_secs_f64() < seconds && !rec.failed() {
+            let copies = rec.frames_due(if n == 0 { 0.0 } else { 1.0 / 60.0 });
+            let t = Instant::now();
+            rec.push_frame(frame.clone(), copies);
+            longest = longest.max(t.elapsed());
+            n += 1;
+            let next = Duration::from_secs_f64(n as f64 / 60.0);
+            if let Some(rest) = next.checked_sub(start.elapsed()) {
+                std::thread::sleep(rest);
+            }
+        }
+        longest
+    }
+
+    /// `push_frame` never waits for the encoder. Stopping one kills it and
+    /// reaps the process, which a busy machine can delay; a real
+    /// regression would block for seconds or forever.
+    #[cfg(unix)]
+    const MAX_PUSH: Duration = Duration::from_millis(250);
+
+    /// Regression test: an encoder that hangs without exiting must not
+    /// freeze the game. No frame waits for it; once the queue is full it is
+    /// killed and the recording fails with a clear message.
+    #[cfg(unix)]
+    #[test]
+    fn a_hanging_encoder_is_stopped_instead_of_freezing_the_game() {
+        let _turn = heavy();
+        let mut rec = fake_encoder("exec sleep 30");
+        let (pid, path) = (rec.process.child.id(), rec.path.clone());
+        let longest = play_in_real_time(&mut rec, 3.0);
+        assert!(longest < MAX_PUSH, "one frame waited {longest:?}");
+        assert!(rec.failed(), "the hang is detected");
+        assert!(process_is_gone(pid), "the encoder is killed");
+        let started = Instant::now();
+        let err = rec.finish().unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(err.contains("could not keep up"), "{err}");
+        assert!(!path.exists(), "no temporary file is left");
+    }
+
+    /// An encoder slower than real time stops the recording instead of
+    /// slowing the game down.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_slow_encoder_stops_the_recording_without_slowing_the_game() {
+        let _turn = heavy();
+        let mut rec = fake_encoder(
+            "while dd of=/dev/null bs=1M count=8 iflag=fullblock 2>/dev/null; do sleep 0.06; done",
+        );
+        let pid = rec.process.child.id();
+        let longest = play_in_real_time(&mut rec, 5.0);
+        assert!(longest < MAX_PUSH, "one frame waited {longest:?}");
+        assert!(rec.failed(), "falling behind is detected");
+        assert!(process_is_gone(pid));
+        assert!(rec.finish().unwrap_err().contains("could not keep up"));
+    }
+
+    /// An encoder that keeps up is never stopped.
+    #[cfg(unix)]
+    #[test]
+    fn an_encoder_that_keeps_up_records_every_frame() {
+        let _turn = heavy();
+        let out = temp_path("raw");
+        let mut rec = fake_encoder(&format!("cat > '{}'", out.display()));
+        let longest = play_in_real_time(&mut rec, 1.0);
+        let kept_up = !rec.failed();
+        let frames = rec.frames;
+        let finished = rec.finish().map(Recording::discard);
+        let bytes = std::fs::metadata(&out).map(|m| m.len());
+        let _ = std::fs::remove_file(&out);
+        assert!(longest < MAX_PUSH, "one frame waited {longest:?}");
+        assert!(kept_up && finished.is_ok(), "{finished:?}");
+        assert_eq!(bytes.unwrap(), frames * u64::from(WIDTH * HEIGHT * 4));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelling_does_not_wait_for_a_hanging_encoder() {
+        let mut rec = fake_encoder("exec sleep 30");
+        let (pid, path) = (rec.process.child.id(), rec.path.clone());
+        rec.push_frame(vec![0; (WIDTH * HEIGHT * 4) as usize], 1);
+        let started = Instant::now();
+        rec.cancel();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(process_is_gone(pid));
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_startup_check_has_a_time_limit() {
+        let sh = |script: &str| {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", script]);
+            cmd
+        };
+        let limit = Duration::from_millis(300);
+        let started = Instant::now();
+        let err = check_encoders(sh("exec sleep 30"), limit).unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(err, t!("video.no_answer"));
+        assert_eq!(check_encoders(sh("echo ' V..... libx264'"), limit), Ok(()));
+        let err = check_encoders(sh("echo ' V..... mpeg4'"), limit).unwrap_err();
+        assert_eq!(err, t!("video.no_x264"));
+        let missing = Command::new("/nonexistent/ffmpeg");
+        assert_eq!(
+            check_encoders(missing, limit).unwrap_err(),
+            t!("video.no_ffmpeg")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutting_down_stops_a_wait_at_once() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "exec sleep 30"]);
+        let mut process = Process::spawn(cmd).unwrap();
+        let started = Instant::now();
+        assert!(process
+            .wait(Duration::from_secs(60), &AtomicBool::new(true))
+            .is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// Lots of output on stdout and stderr must not block the process.
+    #[cfg(unix)]
+    #[test]
+    fn full_pipes_do_not_block() {
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            "head -c 1000000 /dev/zero; head -c 1000000 /dev/zero >&2",
+        ]);
+        let exit = Process::spawn(cmd)
+            .unwrap()
+            .wait(Duration::from_secs(10), &AtomicBool::new(false))
+            .unwrap();
+        assert!(exit.status.success());
+        assert_eq!(
+            (exit.stdout.len(), exit.stderr.len()),
+            (1_000_000, 1_000_000)
+        );
+    }
 
     #[test]
     fn frame_clock_gives_exactly_60_frames_per_second() {
@@ -705,21 +1056,21 @@ mod tests {
     /// check the file with ffprobe. Skipped where ffmpeg is not installed.
     #[test]
     fn recording_is_saved_as_1080x1920_60fps_mp4_with_sound() {
-        if !ffmpeg_available() {
-            eprintln!("ffmpeg saknas: hoppar över videotestet");
+        let _turn = heavy();
+        if !ffmpeg_for_tests() {
             return;
         }
         let mut rec = Recorder::start(false).unwrap();
         let mut frame = vec![0u8; (WIDTH * HEIGHT * 4) as usize];
         let mut total = rec.frames_due(0.0);
-        rec.push_frame(frame.clone(), total);
+        push_waiting(&mut rec, frame.clone(), total);
         for i in 0..44 {
             frame.iter_mut().for_each(|b| *b = (i * 5) as u8);
             let n = rec.frames_due(1.0 / 45.0);
             if i == 10 {
                 rec.add_sound(0);
             }
-            rec.push_frame(frame.clone(), n);
+            push_waiting(&mut rec, frame.clone(), n);
             total += n;
         }
         let recording = rec.finish().unwrap();
@@ -786,7 +1137,8 @@ mod tests {
 
     #[test]
     fn failed_save_is_reported_and_can_be_retried() {
-        if !ffmpeg_available() {
+        let _turn = heavy();
+        if !ffmpeg_for_tests() {
             return;
         }
         let mut rec = Recorder::start(false).unwrap();

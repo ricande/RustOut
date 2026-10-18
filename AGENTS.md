@@ -14,6 +14,11 @@ no asset files.
 
 ## Commands
 
+GitHub Actions (`.github/workflows/ci.yml`) runs the checks below on Linux,
+clippy and the tests on Windows and macOS (with FFmpeg and
+`REQUIRE_FFMPEG=1`, so recording tests fail instead of skipping), checks the
+vendored miniquad and builds with the minimum Rust version, 1.87.
+
 Run all of these before you consider a change done:
 
 ```bash
@@ -99,4 +104,9 @@ Say clearly what you verified by running the game and what only by tests.
 - The maintainer usually writes in Swedish; reply in the language they use.
 - Ask before anything hard to undo or outward-facing: pushing, publishing,
   deleting files, or changing things outside the repository.
+- `vendor/miniquad-0.4.11` is miniquad as published plus `vendor/patches`.
+  Never edit it directly; keep `scripts/check-vendored-miniquad.sh` passing.
+  See docs/UPSTREAM_FIXES.md.
+- Recording must never block the game: no unbounded waits for ffmpeg
+  (`video::Process` and the timeouts in `video.rs`), bounded queues only.
 - Do not commit build output (`target/`), recordings or personal level files.

@@ -227,7 +227,7 @@ language the game is in.
 
 ## Requirements
 
-- Rust (stable, 1.82 or later) via [rustup](https://rustup.rs)
+- Rust (stable, 1.87 or later) via [rustup](https://rustup.rs)
 - Linux: development packages for X11, ALSA and OpenGL, e.g. on Debian/Ubuntu:
   `sudo apt install libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev`
 - Windows and macOS need nothing extra to build.
@@ -261,4 +261,7 @@ and how a frame flows through the code.
 
 ## License
 
-RustOut is released under the [MIT License](LICENSE).
+RustOut is released under the [MIT License](LICENSE). `vendor/miniquad-0.4.11`
+is miniquad 0.4.11 (`MIT OR Apache-2.0`, its license files kept unchanged)
+with one fix for black text rectangles; see
+[docs/UPSTREAM_FIXES.md](docs/UPSTREAM_FIXES.md).

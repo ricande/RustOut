@@ -1,7 +1,8 @@
 [package]
 name = "rustout"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
+rust-version = "1.87"
 description = "A small Breakout/Arkanoid-inspired arcade game built with Macroquad"
 license = "MIT"
 repository = "https://github.com/ricande/RustOut"
@@ -11,6 +12,13 @@ readme = "README.md"
 macroquad = { version = "0.4", features = ["audio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[patch.crates-io]
+# miniquad 0.4.11 as published, plus one fix: deleting a texture makes the
+# texture-binding cache forget it (vendor/patches). Without it, text can turn
+# into black rectangles when macroquad's font atlas grows (macroquad#1006).
+# See docs/UPSTREAM_FIXES.md, including how to drop this again.
+miniquad = { path = "vendor/miniquad-0.4.11" }
 
 [profile.dev.package."*"]
 # Optimise dependencies even in debug builds so `cargo run` stays smooth.
