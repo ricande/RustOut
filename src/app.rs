@@ -628,7 +628,7 @@ mod tests {
         app.handle(&click(
             video_dialog::field_rect(video_dialog::Field::Dir).center(),
         ));
-        app.handle(&chars("/klipp"));
+        app.handle(&chars(&format!("{}klipp", std::path::MAIN_SEPARATOR)));
         app.handle(&click(video_dialog::buttons(false)[0].rect.center()));
         let expected_dir = dir.join("klipp");
         assert_eq!(app.video_requests.len(), 1);

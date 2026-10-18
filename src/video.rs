@@ -1020,10 +1020,14 @@ mod tests {
 
     #[test]
     fn output_paths_are_validated() {
-        let p = output_path("/tmp/videos", "Min runda").unwrap();
-        assert_eq!(p, PathBuf::from("/tmp/videos/Min runda.mp4"));
-        let p = output_path("/tmp/videos/", "klipp.MP4").unwrap();
-        assert_eq!(p, PathBuf::from("/tmp/videos/klipp.MP4"));
+        // An absolute folder on every system.
+        let base = std::env::temp_dir().join("videos");
+        let dir = base.display().to_string();
+        let p = output_path(&dir, "Min runda").unwrap();
+        assert_eq!(p, base.join("Min runda.mp4"));
+        let with_separator = format!("{dir}{}", std::path::MAIN_SEPARATOR);
+        let p = output_path(&with_separator, "klipp.MP4").unwrap();
+        assert_eq!(p, base.join("klipp.MP4"));
         if let Some(home) = std::env::var_os("HOME") {
             let p = output_path("~/Videos", "a").unwrap();
             assert_eq!(p, PathBuf::from(home).join("Videos/a.mp4"));

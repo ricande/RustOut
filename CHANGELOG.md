@@ -44,6 +44,8 @@ All notable changes to RustOut are documented here. The format follows
   (not-fl3/macroquad#1006). RustOut now builds against miniquad 0.4.11 with
   the fix proposed upstream (`vendor/`, `[patch.crates-io]`); see
   docs/UPSTREAM_FIXES.md.
+- Two tests used Unix paths and failed on Windows (found by the new CI);
+  they now use the system's own paths.
 - The minimum Rust version is 1.87, not 1.82: the dependency `fontdue` needs
   1.87. It is now declared as `rust-version` in `Cargo.toml`.
 
